@@ -27,9 +27,8 @@ FEATURES_PATH = BASE_DIR / "final_sales_feature_names.pkl"
 DATA_PATH = BASE_DIR / "New_Query_2026_10_22_10_01_37.csv"
 
 DATA_PATH = (
-    BASE_DIR
-    / "Downloads"
-    / "New_Query_2026_10_22_10_01_37.csv"
+     BASE_DIR / "New_Query_2026_10_22_10_01_37.csv"
+
 )
 
 # ==================================================
