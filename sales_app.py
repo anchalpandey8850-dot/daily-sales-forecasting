@@ -17,10 +17,14 @@ st.set_page_config(
 # ==================================================
 # STEP 2: FILE PATHS
 # ==================================================
-BASE_DIR = Path(r"C:\Users\18645")
+
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_PATH = BASE_DIR / "final_sales_forecasting_model.pkl"
 FEATURES_PATH = BASE_DIR / "final_sales_feature_names.pkl"
+DATA_PATH = BASE_DIR / "New_Query_2026_10_22_10_01_37.csv"
 
 DATA_PATH = (
     BASE_DIR
