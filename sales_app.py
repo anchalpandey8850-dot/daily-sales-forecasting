@@ -16,20 +16,14 @@ st.set_page_config(
 
 # ==================================================
 # STEP 2: FILE PATHS
+# Keep all required files beside this script.
 # ==================================================
-
-from pathlib import Path
-
 BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_PATH = BASE_DIR / "final_sales_forecasting_model.pkl"
 FEATURES_PATH = BASE_DIR / "final_sales_feature_names.pkl"
 DATA_PATH = BASE_DIR / "New_Query_2026_10_22_10_01_37.csv"
 
-DATA_PATH = (
-     BASE_DIR / "New_Query_2026_10_22_10_01_37.csv"
-
-)
 
 # ==================================================
 # STEP 3: LOAD MODEL AND FEATURES
@@ -59,27 +53,39 @@ def load_historical_data():
             "CSV file must contain OrderDate and Sales columns."
         )
 
-    df["OrderDate"] = pd.to_datetime(
-        df["OrderDate"], errors="coerce"
+    # Normalize dates to timezone-naive timestamps.
+    # This avoids timezone comparison errors.
+    df["OrderDate"] = (
+        pd.to_datetime(
+            df["OrderDate"],
+            errors="coerce",
+            utc=True
+        )
+        .dt.tz_convert(None)
+        .dt.normalize()
     )
 
     df["Sales"] = pd.to_numeric(
-        df["Sales"], errors="coerce"
+        df["Sales"],
+        errors="coerce"
     )
 
     df = df.dropna(subset=["OrderDate", "Sales"])
 
     if df.empty:
-        raise ValueError("No valid historical sales data found.")
+        raise ValueError(
+            "No valid historical sales data found."
+        )
 
+    # Aggregate all orders on the same date
     daily_sales = (
         df.groupby("OrderDate")["Sales"]
         .sum()
         .sort_index()
     )
 
-    # Fill missing calendar dates with zero sales.
-    # This is an assumption, not confirmed actual sales.
+    # Fill missing calendar dates with zero.
+    # Verify that missing records really mean zero sales.
     full_dates = pd.date_range(
         start=daily_sales.index.min(),
         end=daily_sales.index.max(),
@@ -99,6 +105,7 @@ def load_historical_data():
 
 # ==================================================
 # STEP 5: CREATE MODEL FEATURES
+# These must match the training features.
 # ==================================================
 def create_features(history):
     return {
@@ -116,6 +123,7 @@ def create_features(history):
 
 # ==================================================
 # STEP 6: GENERATE RECURSIVE FORECAST
+# Use historical data before the selected date.
 # ==================================================
 def generate_forecast(
     model,
@@ -124,15 +132,41 @@ def generate_forecast(
     start_date,
     forecast_days
 ):
-    history = historical_sales.copy()
+    start_timestamp = (
+        pd.Timestamp(start_date)
+        .normalize()
+    )
+
+    # Use only sales before the selected forecast date
+    history = historical_sales.loc[
+        historical_sales.index < start_timestamp
+    ].copy()
 
     if len(history) < 30:
         raise ValueError(
-            "At least 30 days of historical data are required."
+            "At least 30 days of historical sales are required "
+            "before the selected forecast date."
+        )
+
+    last_historical_date = (
+        historical_sales.index.max().normalize()
+    )
+
+    # Do not forecast a distant future date using stale history.
+    # Allow historical dates for backtesting and the next date
+    # immediately after the latest historical date.
+    if start_timestamp > (
+        last_historical_date + pd.Timedelta(days=1)
+    ):
+        raise ValueError(
+            f"Historical data ends on {last_historical_date.date()}. "
+            "For future forecasting, select the day immediately "
+            "after the last historical date or update the dataset. "
+            "Earlier dates can be used for historical backtesting."
         )
 
     forecast_dates = pd.date_range(
-        start=start_date,
+        start=start_timestamp,
         periods=forecast_days,
         freq="D"
     )
@@ -141,6 +175,7 @@ def generate_forecast(
 
     for forecast_date in forecast_dates:
 
+        # Create features from available history
         feature_values = create_features(history)
 
         input_df = pd.DataFrame(
@@ -148,6 +183,7 @@ def generate_forecast(
             columns=feature_names
         )
 
+        # Linear Regression prediction
         prediction = float(
             np.asarray(
                 model.predict(input_df)
@@ -159,15 +195,14 @@ def generate_forecast(
                 "The model generated an invalid prediction."
             )
 
+        # Sales cannot be negative
         prediction = max(0.0, prediction)
 
         predictions.append(prediction)
 
-        # Add prediction to history for the next forecast.
-        # This is recursive forecasting.
-        next_date = history.index[-1] + pd.Timedelta(days=1)
-
-        history.loc[next_date] = prediction
+        # Recursive forecasting:
+        # Add this prediction to history for the next day.
+        history.loc[forecast_date] = prediction
 
     forecast_df = pd.DataFrame({
         "ForecastDate": forecast_dates,
@@ -206,6 +241,16 @@ try:
         st.stop()
 
     model, feature_names = load_model()
+
+    # Verify that the saved model is Linear Regression
+    if type(model).__name__ != "LinearRegression":
+        st.error(
+            f"Expected LinearRegression, but loaded "
+            f"{type(model).__name__}. Please save the trained "
+            "Linear Regression model to the configured model path."
+        )
+        st.stop()
+
     historical_sales = load_historical_data()
 
     expected_features = {
@@ -224,7 +269,7 @@ try:
         st.stop()
 
     st.success(
-        "Forecasting model and historical data loaded successfully!"
+        "Linear Regression model and historical data loaded successfully!"
     )
 
 except Exception as error:
@@ -257,13 +302,20 @@ st.subheader("Forecast Settings")
 col1, col2 = st.columns(2)
 
 with col1:
+    # Default forecast date is the day after the latest history
+    default_forecast_date = (
+        pd.Timestamp(historical_end_date)
+        + pd.Timedelta(days=1)
+    ).date()
+
     start_date = st.date_input(
         "Select Forecast Start Date",
-        value=pd.Timestamp("2025-01-01").date(),
+        value=default_forecast_date,
         min_value=pd.Timestamp("2000-01-01").date(),
         max_value=pd.Timestamp("2100-12-31").date(),
         format="YYYY-MM-DD"
     )
+
 with col2:
     forecast_days = st.selectbox(
         "Forecast Duration",
@@ -286,9 +338,8 @@ st.info(
 )
 
 st.caption(
-    "Changing the start date changes the forecast dates, "
-    "but does not provide the model with new historical sales "
-    "or calendar-seasonality information."
+    "Historical start dates use only sales before the selected date. "
+    "For future forecasts, recent historical data must be available."
 )
 
 
@@ -318,8 +369,10 @@ if st.button(
             )
 
             monthly_sales = (
-                forecast_df.groupby("Month", as_index=False)
-                ["PredictedSales"]
+                forecast_df.groupby(
+                    "Month",
+                    as_index=False
+                )["PredictedSales"]
                 .sum()
             )
 
@@ -401,7 +454,8 @@ if st.button(
         ].copy()
 
         display_df["ForecastDate"] = (
-            display_df["ForecastDate"].dt.strftime("%Y-%m-%d")
+            display_df["ForecastDate"]
+            .dt.strftime("%Y-%m-%d")
         )
 
         display_df = display_df.rename(columns={
@@ -437,9 +491,10 @@ if st.button(
             "This is an experimental recursive forecast. "
             f"The historical dataset ends on "
             f"{historical_end_date:%Y-%m-%d}. "
-            "Predictions are based on older sales patterns and "
-            "should not be treated as reliable actual sales. "
-            "Errors can accumulate over longer forecast horizons."
+            "Predictions are based on historical sales patterns "
+            "and are not guaranteed actual sales. "
+            "Errors can accumulate over longer forecast horizons. "
+            "The model's test R2 was approximately 0.003."
         )
 
     except Exception as error:
